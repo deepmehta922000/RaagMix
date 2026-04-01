@@ -23,4 +23,4 @@ Desktop app for a Bollywood/contemporary dance studio owner in India. She upload
 - Hindi + English bilingual UI (labels in both languages)
 
 ## Current Phase
-Phase 1 — Scaffold: setting up the monorepo, Electron+React shell, FastAPI backend
+Phase 2 — Audio Engine: BPM detection, time-stretching, crossfades, loop extraction, waveform preview. All endpoints go in backend/routers/ as separate files.
