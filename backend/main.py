@@ -1,11 +1,17 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env before any router imports so GEMINI_API_KEY is available to os.getenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from routers import analyze, crossfade, health, loops, transform, upload, waveform
+from routers import analyze, crossfade, health, loops, remix, remix_manual, transform, upload, waveform
 from utils import UPLOADS_DIR
 
 logging.basicConfig(
@@ -22,7 +28,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RaagMix Backend", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="RaagMix Backend", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,3 +58,5 @@ app.include_router(transform.router)
 app.include_router(crossfade.router)
 app.include_router(loops.router)
 app.include_router(waveform.router)
+app.include_router(remix.router)
+app.include_router(remix_manual.router)
