@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from routers import analyze, crossfade, health, loops, remix, remix_manual, transform, upload, waveform
+from routers import analyze, crossfade, files, health, loops, remix, remix_manual, stems, transform, upload, waveform
 from utils import UPLOADS_DIR
 
 logging.basicConfig(
@@ -52,6 +52,7 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
 
 
 app.include_router(health.router)
+app.include_router(files.router)
 app.include_router(upload.router)
 app.include_router(analyze.router)
 app.include_router(transform.router)
@@ -60,3 +61,4 @@ app.include_router(loops.router)
 app.include_router(waveform.router)
 app.include_router(remix.router)
 app.include_router(remix_manual.router)
+app.include_router(stems.router)

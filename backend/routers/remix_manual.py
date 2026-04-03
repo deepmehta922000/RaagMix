@@ -16,8 +16,8 @@ from pydantic import BaseModel, field_validator, model_validator
 from pydub import AudioSegment as _AudioSegment
 
 from routers.analyze import _analyze_sync
-from routers.crossfade import _crossfade_sync
 from routers.loops import _extract_loop_sync
+from routers.mixer import mix_segments
 from routers.transform import _time_stretch_sync
 from utils import UPLOADS_DIR, pydub_from_file_id, validate_file_id
 
@@ -75,6 +75,10 @@ class ManualRemixRequest(BaseModel):
     target_bpm: Optional[float] = None
     crossfade_seconds: float = 2.0
     fade_type: str = "linear"
+    align_beats: bool = True
+    eq_crossfade: bool = True
+    vocal_duck: bool = False
+    fade_out_seconds: float = 3.0   # 0 = disabled
 
     @field_validator("segments")
     @classmethod
@@ -97,6 +101,13 @@ class ManualRemixRequest(BaseModel):
     def check_crossfade(cls, v: float) -> float:
         if v <= 0 or v > 30.0:
             raise ValueError("crossfade_seconds must be > 0 and <= 30")
+        return v
+
+    @field_validator("fade_out_seconds")
+    @classmethod
+    def check_fade_out(cls, v: float) -> float:
+        if not (0.0 <= v <= 10.0):
+            raise ValueError("fade_out_seconds must be between 0 and 10")
         return v
 
     @field_validator("fade_type")
@@ -153,6 +164,26 @@ def _hard_concat_sync(file_id_a: str, file_id_b: str) -> dict:
     }
 
 
+def _apply_fade_out_sync(file_id: str, fade_ms: int) -> dict:
+    """Apply a fade-out to the end of a file and save as a new UUID WAV.
+
+    If fade_ms >= the file's actual length, clips the fade to half the track
+    length rather than failing.
+    """
+    seg = pydub_from_file_id(file_id)
+    actual_ms = len(seg)
+    if fade_ms >= actual_ms:
+        fade_ms = actual_ms // 2  # graceful fallback
+    faded = seg.fade_out(fade_ms)
+    new_id = str(uuid.uuid4())
+    out_path = UPLOADS_DIR / f"{new_id}.wav"
+    faded.export(str(out_path), format="wav")
+    return {
+        "new_file_id": new_id,
+        "total_duration_seconds": round(len(faded) / 1000.0, 3),
+    }
+
+
 def _cleanup(file_ids: set[str]) -> None:
     """Delete a set of intermediate files from UPLOADS_DIR."""
     for fid in file_ids:
@@ -178,14 +209,15 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
       each join point.
     - skip_stretch=True on a segment excludes it from time-stretching even when
       target_bpm is set (for dialogue, voiceovers, short sound effects).
+    - fade_out_seconds: applies a smooth fade-out to the final output (0 = off).
+    - vocal_duck: removes vocals from the crossfade overlap regions so only
+      instrumentals blend; vocals return on the downbeat.
     """
     event_loop = asyncio.get_running_loop()
     sorted_segs = sorted(req.segments, key=lambda s: s.order)
     crossfade_ms = int(req.crossfade_seconds * 1000)
 
     # ── Pre-check: crossfade feasibility against expected durations ───────────
-    # This fast check (no audio loaded) catches obvious misconfigurations.
-    # _crossfade_sync also validates at execution time using real durations.
     if len(sorted_segs) > 1:
         for i, seg in enumerate(sorted_segs[:-1]):
             if not seg.crossfade_with_next:
@@ -193,9 +225,6 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
             next_seg = sorted_segs[i + 1]
             seg_dur_ms = seg.end_time - seg.start_time
             next_dur_ms = next_seg.end_time - next_seg.start_time
-            # For the very first crossfade both sides must be long enough.
-            # For subsequent crossfades the accumulator grows, so only check
-            # the incoming segment.
             if i == 0 and seg_dur_ms <= crossfade_ms:
                 raise HTTPException(
                     status_code=422,
@@ -225,8 +254,6 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
                     },
                 )
 
-    # All new file IDs created during this request. The final output file_id is
-    # discarded from this set before cleanup so it is never deleted.
     intermediates: set[str] = set()
 
     try:
@@ -256,7 +283,7 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
                 ext["new_file_id"],
             )
 
-        # ── Step 2: Post-extract crossfade feasibility check (ground truth) ──
+        # ── Step 2: Post-extract crossfade feasibility check ─────────────────
         if len(sorted_segs) > 1:
             for i, seg in enumerate(sorted_segs[:-1]):
                 if not seg.crossfade_with_next:
@@ -280,9 +307,6 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
                     )
 
         # ── Step 3: Analyze parent BPMs in parallel, then stretch ─────────────
-        # Use the parent file's BPM — the extracted clip is a time window of the
-        # parent and has the same tempo. Analyzing the clip would add latency for
-        # no accuracy gain on constant-tempo tracks.
         processed_ids: list[str] = []
         segment_meta: list[dict] = []
 
@@ -372,8 +396,9 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
                 if seg.crossfade_with_next:
                     try:
                         chain_result = await event_loop.run_in_executor(
-                            None, _crossfade_sync,
+                            None, mix_segments,
                             accumulator, next_file, crossfade_ms, req.fade_type,
+                            req.align_beats, req.eq_crossfade, req.vocal_duck,
                         )
                     except HTTPException as exc:
                         raise HTTPException(
@@ -390,8 +415,6 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
                     )
 
                 new_acc = chain_result["new_file_id"]
-                # The previous accumulator (not the initial segment) is now
-                # consumed — it is a pure intermediate.
                 if i > 0:
                     intermediates.add(accumulator)
                 accumulator = new_acc
@@ -399,6 +422,19 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
 
             final_file_id = accumulator
             total_duration = last_chain_result["total_duration_seconds"]
+
+        # ── Step 4b: Final fade-out ───────────────────────────────────────────
+        if req.fade_out_seconds > 0:
+            fade_ms = int(req.fade_out_seconds * 1000)
+            faded = await event_loop.run_in_executor(
+                None, _apply_fade_out_sync, final_file_id, fade_ms,
+            )
+            intermediates.add(final_file_id)
+            final_file_id = faded["new_file_id"]
+            total_duration = faded["total_duration_seconds"]
+            logger.info(
+                "Applied %.1fs fade-out → %s", req.fade_out_seconds, final_file_id
+            )
 
         # ── Step 5: Clean up intermediates, protect the output ───────────────
         intermediates.discard(final_file_id)
@@ -415,6 +451,8 @@ async def remix_manual(req: ManualRemixRequest) -> dict:
             "target_bpm": req.target_bpm,
             "crossfade_seconds": req.crossfade_seconds,
             "fade_type": req.fade_type,
+            "fade_out_seconds": req.fade_out_seconds,
+            "vocal_duck": req.vocal_duck,
             "segments": segment_meta,
         }
 

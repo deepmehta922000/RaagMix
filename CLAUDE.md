@@ -23,4 +23,4 @@ Desktop app for a Bollywood/contemporary dance studio owner in India. She upload
 - Hindi + English bilingual UI (labels in both languages)
 
 ## Current Phase
-Phase 3 — AI Remix Brain: Gemini API integration for natural language remix instructions, style presets (Bollywood/contemporary), JSON mix plan generator, mix plan executor that chains audio engine endpoints.
+Phase 4 — Studio UI: drag-and-drop song library, waveform visualization, remix controls (AI mode + manual timeline mode), style presets, playback controls, export to MP3/WAV, Hindi+English bilingual interface. All UI components go in frontend/src/components/.

@@ -9,8 +9,8 @@ from typing import Any, Optional
 from fastapi import HTTPException
 
 from routers.analyze import _analyze_sync
-from routers.crossfade import _crossfade_sync
 from routers.loops import _extract_loop_sync
+from routers.mixer import mix_segments
 from routers.transform import _time_stretch_sync, MAX_STRETCH_RATIO, MIN_STRETCH_RATIO
 from utils import UPLOADS_DIR, get_upload_path
 
@@ -185,11 +185,13 @@ class MixExecutor:
         if op == "crossfade":
             file_id_a = self._resolve(step["file_id_a"], step_outputs)
             file_id_b = self._resolve(step["file_id_b"], step_outputs)
-            return _crossfade_sync(
+            return mix_segments(
                 file_id_a,
                 file_id_b,
                 int(step["crossfade_ms"]),
                 str(step["fade_type"]),
+                align_beats=True,
+                eq_crossfade=True,
             )
 
         if op == "extract_loop":

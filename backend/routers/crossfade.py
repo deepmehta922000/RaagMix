@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pydub import AudioSegment
 
+from routers.mixer import mix_segments
 from utils import UPLOADS_DIR, pydub_from_file_id, validate_file_id
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,8 @@ class CrossfadeRequest(BaseModel):
     crossfade_duration: float  # seconds
     fade_type: str = "linear"  # "linear" or "logarithmic"
     normalize_bpm: bool = False  # stub: reserved for v2 BPM-matched crossfade
+    align_beats: bool = False   # enable beat alignment + phrase snap + energy match
+    eq_crossfade: bool = False  # enable bass-cut EQ during the crossfade region
 
 
 def _crossfade_sync(
@@ -86,20 +89,34 @@ async def crossfade(req: CrossfadeRequest) -> dict:
     crossfade_ms = int(req.crossfade_duration * 1000)
 
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        _crossfade_sync,
-        req.file_id_a,
-        req.file_id_b,
-        crossfade_ms,
-        req.fade_type,
-    )
+    if req.align_beats or req.eq_crossfade:
+        result = await loop.run_in_executor(
+            None,
+            mix_segments,
+            req.file_id_a,
+            req.file_id_b,
+            crossfade_ms,
+            req.fade_type,
+            req.align_beats,
+            req.eq_crossfade,
+        )
+    else:
+        result = await loop.run_in_executor(
+            None,
+            _crossfade_sync,
+            req.file_id_a,
+            req.file_id_b,
+            crossfade_ms,
+            req.fade_type,
+        )
     logger.info(
-        "Crossfaded %s + %s → %s (%.1fs %s fade)",
+        "Crossfaded %s + %s → %s (%.1fs %s fade, beats=%s eq=%s)",
         req.file_id_a,
         req.file_id_b,
         result["new_file_id"],
         req.crossfade_duration,
         req.fade_type,
+        req.align_beats,
+        req.eq_crossfade,
     )
     return result

@@ -7,3 +7,4 @@ aiofiles>=23.2.1
 python-multipart>=0.0.9
 google-generativeai>=0.7.0
 python-dotenv>=1.0.0
+spleeter>=2.3.2
